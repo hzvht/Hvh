@@ -26,7 +26,30 @@ _G.DieCheckEnabled = true
 _G.FOVSize = 100
 _G.FOVVisible = true
 _G.TracerEnabled = true
-_G.AimPart = "Head"
+
+-- FOV Core Colors
+_G.FOVCircleColor = Color3.fromRGB(255, 255, 255)
+_G.FOVCircleOutlineColor = Color3.fromRGB(0, 0, 0)
+
+-- Tracer Core Settings (เพิ่มขนาดและความหนาขอบตรงนี้)
+_G.TracerLineColor = Color3.fromRGB(255, 0, 0)
+_G.TracerLineOutlineColor = Color3.fromRGB(0, 0, 0)
+_G.TracerThickness = 1.0
+_G.TracerOutlineThickness = 3.0
+
+-- FOV Fill Settings
+_G.FOVFillEnabled = false
+_G.FOVFillTransparency = 0.2
+_G.FOVFillColor1 = Color3.fromRGB(255, 0, 0)
+_G.FOVFillColor2 = Color3.fromRGB(0, 255, 0)
+_G.FOVFillColor3 = Color3.fromRGB(0, 0, 255)
+_G.FOVFillRotateEnabled = false
+_G.FOVFillRotateSpeed = 1
+
+-- Target Settings
+_G.TargetPartMode = "Head" 
+_G.TransitionSpeed = 5 
+_G.MaxTargetDistance = 1000 -- [ADDED] ตัวแปรเก็บค่าระยะทางสูงสุดในการล็อกเป้าหมาย
 
 -- ESP Variables
 _G.ESPEnabled = false
@@ -47,29 +70,13 @@ _G.ThirdPersonDistance = 12
 _G.BhopEnabled = false
 _G.BhopSpeedMultiplier = 1.5 
 
--- World & Body Customization Variables
-_G.ForcefieldBody = false
-_G.ForcefieldColor = Color3.fromRGB(0, 255, 255)
-_G.ForcefieldTransparency = 0.5
-
--- Visuals Tab Variables (New)
-_G.TaserEnabled = false
-_G.TaserColor = Color3.fromRGB(0, 255, 255)
-_G.ItemSpinEnabled = false
-_G.ItemSpinSpeed = 10
-_G.ItemSpinPattern = "Regular"
-_G.ItemEffectEnabled = false
-_G.ItemMaterialType = "ForceField"
-_G.ItemEffectColor = Color3.fromRGB(0, 255, 255)
-
 local Camera = workspace.CurrentCamera
 local Players = game.Players
 local LocalPlayer = Players.LocalPlayer
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
-local Lighting = game:GetService("Lighting")
 
--- ================= Create Target HUD GUI (Draggable Glassmorphic) =================
+-- ================= Create Target HUD GUI =================
 local TargetGui = Instance.new("ScreenGui")
 TargetGui.Name = "NusTargetHudGui"
 TargetGui.ResetOnSpawn = false
@@ -214,29 +221,28 @@ EspGui.ResetOnSpawn = false
 EspGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 EspGui.Parent = ParentContainer
 
--- ================= Drawing FOV & Tracer =================
+-- ================= Drawing Objects Setup =================
 local FOVCircleOutline = Drawing.new("Circle")
-FOVCircleOutline.Color = Color3.fromRGB(0, 0, 0)
 FOVCircleOutline.Thickness = 1.5
 FOVCircleOutline.NumSides = 40
 FOVCircleOutline.Filled = false
 FOVCircleOutline.Visible = _G.FOVVisible
 
 local FOVCircle = Drawing.new("Circle")
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 FOVCircle.Thickness = 1.0
 FOVCircle.NumSides = 40
 FOVCircle.Filled = false
 FOVCircle.Visible = _G.FOVVisible
 
+local FOVFill = Drawing.new("Circle")
+FOVFill.NumSides = 40
+FOVFill.Filled = true
+FOVFill.Visible = false
+
 local TracerLineOutline = Drawing.new("Line")
-TracerLineOutline.Color = Color3.fromRGB(0, 0, 0) 
-TracerLineOutline.Thickness = 3 
 TracerLineOutline.Transparency = 1.0 
 
 local TracerLine = Drawing.new("Line")
-TracerLine.Color = Color3.fromRGB(255, 0, 0) 
-TracerLine.Thickness = 1
 TracerLine.Transparency = 0.8
 
 local function getScreenCenter()
@@ -256,59 +262,23 @@ local function isDead(humanoid, char)
     return false
 end
 
--- ================= Taser Beam Creator Function =================
-local function CreateTaserBeam(startPos, endPos)
-    if not _G.TaserEnabled then return end
-    
-    local beam = Instance.new("Part")
-    beam.Name = "TaserBeamLine"
-    beam.Anchored = true
-    beam.CanCollide = false
-    beam.Material = Enum.Material.Neon
-    beam.Color = _G.TaserColor
-    
-    local distance = (startPos - endPos).Magnitude
-    beam.Size = Vector3.new(0.15, 0.15, distance)
-    beam.CFrame = CFrame.lookAt(startPos, endPos) * CFrame.new(0, 0, -distance / 2)
-    beam.Parent = workspace
-    
-    task.spawn(function()
-        for i = 1, 10 do
-            task.wait(0.04)
-            beam.Transparency = i / 10
-        end
-        beam:Destroy()
-    end)
-end
-
--- ดักฟังการเปิดใช้งานคลาส Tool เพื่อยิงเส้น Taser Beam
-LocalPlayer.CharacterAppearanceLoaded:Connect(function(character)
-    character.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") then
-            child.Activated:Connect(function()
-                if _G.TaserEnabled then
-                    local handle = child:FindFirstChild("Handle") or child:FindFirstChildOfClass("BasePart")
-                    if handle then
-                        local mouse = LocalPlayer:GetMouse()
-                        CreateTaserBeam(handle.Position, mouse.Hit.Position)
-                    end
-                end
-            end)
-        end
-    end)
-end)
-
 -- ================= Target Selector System =================
-local ClosestTarget = nil
+local CurrentAimTargetPosition = nil 
 local CurrentTargetPlayer = nil
+local CurrentTargetCharacter = nil
+local lastTarget = nil
+local interpolationProgress = 0 
 
 task.spawn(function()
-    while task.wait(0.1) do
+    while task.wait(0.01) do
         if not _G.SilentAimEnabled then 
-            ClosestTarget = nil 
+            CurrentAimTargetPosition = nil 
             CurrentTargetPlayer = nil
+            CurrentTargetCharacter = nil
+            lastTarget = nil
+            interpolationProgress = 0
         else
-            local TempTarget = nil
+            local TempTargetChar = nil
             local TempPlayer = nil
             local MaxDistance = _G.FOVSize
             local Center = getScreenCenter()
@@ -322,27 +292,59 @@ task.spawn(function()
             end
 
             for _, char in ipairs(PotentialTargets) do
-                local targetPart = char:FindFirstChild(_G.AimPart) or char:FindFirstChild("HumanoidRootPart")
+                local rootPart = char:FindFirstChild("HumanoidRootPart")
                 local humanoid = char:FindFirstChildOfClass("Humanoid")
                 
-                if targetPart and humanoid then
+                if rootPart and humanoid then
                     if isDead(humanoid, char) then continue end
-                    if MyRoot and (targetPart.Position - MyRoot.Position).Magnitude > 500 then continue end
-                    if isBehindWall(targetPart) then continue end
+                    -- [MODIFIED] เปลี่ยนจากการจำกัดระยะทางที่ 500 คงที่ มาใช้ค่าจาก Slider (_G.MaxTargetDistance) แทน
+                    if MyRoot and (rootPart.Position - MyRoot.Position).Magnitude > _G.MaxTargetDistance then continue end
+                    if isBehindWall(rootPart) then continue end
                     
-                    local ScreenPosition, OnScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                    local ScreenPosition, OnScreen = Camera:WorldToViewportPoint(rootPart.Position)
                     if OnScreen then
                         local DistanceToCenter = (Vector2.new(ScreenPosition.X, ScreenPosition.Y) - Center).Magnitude
                         if DistanceToCenter < MaxDistance then
-                            TempTarget = targetPart
+                            TempTargetChar = char
                             TempPlayer = Players:GetPlayerFromCharacter(char)
                             MaxDistance = DistanceToCenter
                         end
                     end
                 end
             end
-            ClosestTarget = TempTarget
+            
             CurrentTargetPlayer = TempPlayer
+            CurrentTargetCharacter = TempTargetChar
+
+            if TempTargetChar then
+                local head = TempTargetChar:FindFirstChild("Head")
+                local root = TempTargetChar:FindFirstChild("HumanoidRootPart")
+                
+                if head and root then
+                    if _G.TargetPartMode == "Root to Head" then
+                        if lastTarget ~= TempTargetChar then
+                            lastTarget = TempTargetChar
+                            interpolationProgress = 0
+                        end
+                        interpolationProgress = math.clamp(interpolationProgress + (0.01 * _G.TransitionSpeed), 0, 1)
+                        CurrentAimTargetPosition = root.Position:Lerp(head.Position, interpolationProgress)
+                    elseif _G.TargetPartMode == "HumanoidRootPart" then
+                        CurrentAimTargetPosition = root.Position
+                        interpolationProgress = 0
+                        lastTarget = TempTargetChar
+                    else 
+                        CurrentAimTargetPosition = head.Position
+                        interpolationProgress = 1
+                        lastTarget = TempTargetChar
+                    end
+                else
+                    CurrentAimTargetPosition = nil
+                end
+            else
+                lastTarget = nil
+                interpolationProgress = 0
+                CurrentAimTargetPosition = nil
+            end
         end
     end
 end)
@@ -403,23 +405,54 @@ Players.PlayerRemoving:Connect(function(player) RemoveESP(player) end)
 -- ================= Main Render Loop =================
 local RunService = game:GetService("RunService")
 local spinAngle = 0
-local itemTickCounter = 0
 local jitterToggle = false
 local LastLoggedHudTargetId = 0
+local colorRotateTick = 0
 
-RunService.RenderStepped:Connect(function(deltaTime)
+RunService.RenderStepped:Connect(function()
     local Center = getScreenCenter()
     local ShowCircle = _G.FOVVisible and _G.SilentAimEnabled
     
-    FOVCircleOutline.Position = Center FOVCircleOutline.Radius = _G.FOVSize FOVCircleOutline.Visible = ShowCircle
-    FOVCircle.Position = Center FOVCircle.Radius = _G.FOVSize FOVCircle.Visible = ShowCircle
+    -- อัปเดตคุณสมบัติวงกลม FOV
+    FOVCircleOutline.Position = Center FOVCircleOutline.Radius = _G.FOVSize FOVCircleOutline.Visible = ShowCircle FOVCircleOutline.Color = _G.FOVCircleOutlineColor
+    FOVCircle.Position = Center FOVCircle.Radius = _G.FOVSize FOVCircle.Visible = ShowCircle FOVCircle.Color = _G.FOVCircleColor
     
-    if _G.SilentAimEnabled and _G.TracerEnabled and ClosestTarget then
-        local TargetPos, OnScreen = Camera:WorldToViewportPoint(ClosestTarget.Position)
+    -- จัดการส่วนของ FOV Fill
+    if ShowCircle and _G.FOVFillEnabled then
+        FOVFill.Position = Center
+        FOVFill.Radius = _G.FOVSize
+        FOVFill.Transparency = _G.FOVFillTransparency
+        FOVFill.Visible = true
+        
+        if _G.FOVFillRotateEnabled then
+            colorRotateTick = colorRotateTick + (0.01 * _G.FOVFillRotateSpeed)
+            local t = (math.sin(colorRotateTick) + 1) / 2
+            local currentFillColor
+            
+            if t < 0.5 then
+                currentFillColor = _G.FOVFillColor1:Lerp(_G.FOVFillColor2, t * 2)
+            else
+                currentFillColor = _G.FOVFillColor2:Lerp(_G.FOVFillColor3, (t - 0.5) * 2)
+            end
+            FOVFill.Color = currentFillColor
+        else
+            FOVFill.Color = _G.FOVFillColor1
+        end
+    else
+        FOVFill.Visible = false
+    end
+    
+    -- จัดการส่วนของเส้น Tracer (ปรับขนาดความหนาหลัก + ขอบตามตัวแปร)
+    if _G.SilentAimEnabled and _G.TracerEnabled and CurrentAimTargetPosition then
+        local TargetPos, OnScreen = Camera:WorldToViewportPoint(CurrentAimTargetPosition)
         if OnScreen then
             local ToPos = Vector2.new(TargetPos.X, TargetPos.Y)
-            TracerLineOutline.From = Center TracerLineOutline.To = ToPos TracerLineOutline.Visible = true
-            TracerLine.From = Center TracerLine.To = ToPos TracerLine.Visible = true
+            
+            TracerLineOutline.From = Center TracerLineOutline.To = ToPos TracerLineOutline.Visible = true 
+            TracerLineOutline.Color = _G.TracerLineOutlineColor TracerLineOutline.Thickness = _G.TracerOutlineThickness
+            
+            TracerLine.From = Center TracerLine.To = ToPos TracerLine.Visible = true 
+            TracerLine.Color = _G.TracerLineColor TracerLine.Thickness = _G.TracerThickness
         else
             TracerLineOutline.Visible = false TracerLine.Visible = false
         end
@@ -545,52 +578,6 @@ RunService.RenderStepped:Connect(function(deltaTime)
         end
         v.BillboardGui.Enabled = false
     end
-
-    -- REALTIME ADVANCED FOREFILL BODY SYSTEM
-    if _G.ForcefieldBody and LocalPlayer.Character then
-        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and not part:IsDescendantOf(LocalPlayer.Character:FindFirstChildOfClass("Tool") or workspace) then
-                part.Material = Enum.Material.ForceField
-                part.Color = _G.ForcefieldColor
-                part.Transparency = _G.ForcefieldTransparency
-            elseif part:IsA("Decal") or part:IsA("Texture") then
-                part.Transparency = 1
-            end
-        end
-    end
-
-    -- REALTIME ITEM SPIN & MATERIAL COLOR SYSTEM (NEW)
-    if LocalPlayer.Character then
-        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        if tool then
-            -- 1. ลอจิกการเปลี่ยนสีและวัตถุของอาวุธ (Item Effect)
-            for _, itemPart in ipairs(tool:GetDescendants()) do
-                if itemPart:IsA("BasePart") then
-                    if _G.ItemEffectEnabled then
-                        if _G.ItemMaterialType == "ForceField" then
-                            itemPart.Material = Enum.Material.ForceField
-                        elseif _G.ItemMaterialType == "Neon" then
-                            itemPart.Material = Enum.Material.Neon
-                        end
-                        itemPart.Color = _G.ItemEffectColor
-                    end
-                end
-            end
-
-            -- 2. ลอจิกการหมุนของอาวุธที่ถือ (Item Spin)
-            if _G.ItemSpinEnabled then
-                itemTickCounter = itemTickCounter + (deltaTime * _G.ItemSpinSpeed)
-                if _G.ItemSpinPattern == "Regular" then
-                    tool.Grip = CFrame.fromEulerAnglesXYZ(0, itemTickCounter, 0)
-                elseif _G.ItemSpinPattern == "Sine Wave" then
-                    local sineAngle = math.sin(itemTickCounter) * math.rad(90)
-                    tool.Grip = CFrame.fromEulerAnglesXYZ(0, sineAngle, 0)
-                elseif _G.ItemSpinPattern == "Rapid Spin" then
-                    tool.Grip = CFrame.fromEulerAnglesXYZ(itemTickCounter, itemTickCounter * 1.5, itemTickCounter * 2)
-                end
-            end
-        end
-    end
 end)
 
 -- ================= Auto Bunny Hop =================
@@ -613,19 +600,19 @@ end)
 local OldNamecall
 OldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(Self, ...)
     local Args = {...} local Method = getnamecallmethod()
-    if _G.SilentAimEnabled and ClosestTarget and not checkcaller() then
+    if _G.SilentAimEnabled and CurrentAimTargetPosition and not checkcaller() then
         if (Method == "ScreenPointToRay" or Method == "ViewportPointToRay") and Self == Camera then
-            return Ray.new(Camera.CFrame.Position, (ClosestTarget.Position - Camera.CFrame.Position).Unit)
+            return Ray.new(Camera.CFrame.Position, (CurrentAimTargetPosition - Camera.CFrame.Position).Unit)
         end
         if Method == "Raycast" and tostring(Self) == "Workspace" then
             local Origin = Args[1]
-            if _G.BulletTPEnabled then Args[1] = ClosestTarget.Position - (Args[2].Unit * 1) Args[2] = Args[2].Unit * 5 else Args[2] = (ClosestTarget.Position - Origin).Unit * Args[2].Magnitude end
+            if _G.BulletTPEnabled then Args[1] = CurrentAimTargetPosition - (Args[2].Unit * 1) Args[2] = Args[2].Unit * 5 else Args[2] = (CurrentAimTargetPosition - Origin).Unit * Args[2].Magnitude end
             return OldNamecall(Self, unpack(Args))
         end
         if (Method == "FindPartOnRay" or Method == "FindPartOnRayWithIgnoreList" or Method == "FindPartOnRayWithWhitelist") and tostring(Self) == "Workspace" then
             local CurrentRay = Args[1]
-            if _G.BulletTPEnabled then local NewOrigin = ClosestTarget.Position - (CurrentRay.Direction.Unit * 1) Args[1] = Ray.new(NewOrigin, CurrentRay.Direction.Unit * 5)
-            else Args[1] = Ray.new(CurrentRay.Origin, (ClosestTarget.Position - CurrentRay.Origin).Unit * CurrentRay.Direction.Magnitude) end
+            if _G.BulletTPEnabled then local NewOrigin = CurrentAimTargetPosition - (CurrentRay.Direction.Unit * 1) Args[1] = Ray.new(NewOrigin, CurrentRay.Direction.Unit * 5)
+            else Args[1] = Ray.new(CurrentRay.Origin, (CurrentAimTargetPosition - CurrentRay.Origin).Unit * CurrentRay.Direction.Magnitude) end
             return OldNamecall(Self, unpack(Args))
         end
     end
@@ -637,15 +624,19 @@ local Tabs = {
     Main = Window:AddTab("Silent Aim", "user"),
     ESP = Window:AddTab("ESP Settings", "eye"),
     Movement = Window:AddTab("Anti Aim & Move", "move"),
-    World = Window:AddTab("World & Visuals", "globe"), 
-    Visuals = Window:AddTab("Visuals", "image"), -- เพิ่ม Tab ใหม่ตามคำขอ
     ['UI Settings'] = Window:AddTab("UI Settings", "settings")
 }
 
+-- จัดกลุ่มฝั่งซ้ายและขวาของหน้าหลัก
 local LeftGroupBox = Tabs.Main:AddLeftGroupbox("Silent Aim Configuration")
-local RightGroupBox = Tabs.Main:AddRightGroupbox("FOV & Target Settings")
+local TargetGroupBox = Tabs.Main:AddLeftGroupbox("Targeting Options")
 
--- [Tab 1: Silent Aim - Left Box]
+-- [แยกกลุ่มเมนูฝั่งขวาออกเป็น 3 ชุด คลีนๆ]
+local FOVGroupBox = Tabs.Main:AddRightGroupbox("FOV Settings")
+local FOVFillGroupBox = Tabs.Main:AddRightGroupbox("FOV Fill (Rainbow)")
+local TracerGroupBox = Tabs.Main:AddRightGroupbox("Tracer Settings")
+
+-- ================= [1. Silent Aim Configuration - ฝั่งซ้าย] =================
 LeftGroupBox:AddToggle("SilentAimToggle", { Text = "Enable Silent Aim (Bullet Deflection)", Default = false })
 Toggles.SilentAimToggle:OnChanged(function() _G.SilentAimEnabled = Toggles.SilentAimToggle.Value end)
 
@@ -655,15 +646,85 @@ Toggles.BulletTPToggle:OnChanged(function() _G.BulletTPEnabled = Toggles.BulletT
 LeftGroupBox:AddToggle("WallCheckToggle", { Text = "Enable Wall Check", Default = false })
 Toggles.WallCheckToggle:OnChanged(function() _G.WallCheckEnabled = Toggles.WallCheckToggle.Value end)
 
--- [Tab 1: Silent Aim - Right Box]
-RightGroupBox:AddToggle("FOVVisibleToggle", { Text = "Show FOV Circle", Default = true })
+-- ================= [2. Targeting Options - ฝั่งซ้าย] =================
+TargetGroupBox:AddDropdown("TargetPartDropdown", { 
+    Text = "Target Lock Part", 
+    Values = {"Head", "HumanoidRootPart", "Root to Head"}, 
+    Default = 1, 
+    Multi = false 
+})
+Options.TargetPartDropdown:OnChanged(function() _G.TargetPartMode = Options.TargetPartDropdown.Value end)
+
+TargetGroupBox:AddSlider("TransitionSpeedSlider", { Text = "Root Transfer Speed (Root to Head)", Default = 5, Min = 1, Max = 30, Rounding = 1 })
+Options.TransitionSpeedSlider:OnChanged(function() _G.TransitionSpeed = Options.TransitionSpeedSlider.Value end)
+
+-- [ADDED] เพิ่ม Slider ล็อกระยะทาง 1 - 1000 studs ใน UI เมนูหลัก
+TargetGroupBox:AddSlider("MaxDistanceSlider", { 
+    Text = "Max Lock Distance (Studs)", 
+    Default = 1000, 
+    Min = 1, 
+    Max = 1000, 
+    Rounding = 0 
+})
+Options.MaxDistanceSlider:OnChanged(function() 
+    _G.MaxTargetDistance = Options.MaxDistanceSlider.Value 
+end)
+
+
+-- ================= [3. FOV Settings - ฝั่งขวาช่องแรก] =================
+FOVGroupBox:AddToggle("FOVVisibleToggle", { Text = "Show FOV Circle", Default = true })
 Toggles.FOVVisibleToggle:OnChanged(function() _G.FOVVisible = Toggles.FOVVisibleToggle.Value end)
 
-RightGroupBox:AddSlider("FOVSlider", { Text = "FOV Size Radius", Default = 100, Min = 40, Max = 800, Rounding = 0 })
+FOVGroupBox:AddSlider("FOVSlider", { Text = "FOV Size Radius", Default = 100, Min = 40, Max = 800, Rounding = 0 })
 Options.FOVSlider:OnChanged(function() _G.FOVSize = Options.FOVSlider.Value end)
 
-RightGroupBox:AddDropdown("AimPartDropdown", { Text = "Aim Lock Target Part", Values = {"Head", "HumanoidRootPart"}, Default = 1, Multi = false })
-Options.AimPartDropdown:OnChanged(function() _G.AimPart = Options.AimPartDropdown.Value end)
+FOVGroupBox:AddLabel("FOV Line Color"):AddColorPicker("FOVCircleColorPicker", { Default = Color3.fromRGB(255, 255, 255) })
+Options.FOVCircleColorPicker:OnChanged(function() _G.FOVCircleColor = Options.FOVCircleColorPicker.Value end)
+
+FOVGroupBox:AddLabel("FOV Outline Color"):AddColorPicker("FOVCircleOutlineColorPicker", { Default = Color3.fromRGB(0, 0, 0) })
+Options.FOVCircleOutlineColorPicker:OnChanged(function() _G.FOVCircleOutlineColor = Options.FOVCircleOutlineColorPicker.Value end)
+
+
+-- ================= [4. FOV Fill (Rainbow) - ฝั่งขวาช่องกลาง] =================
+FOVFillGroupBox:AddToggle("FOVFillToggle", { Text = "Enable FOV Fill", Default = false })
+Toggles.FOVFillToggle:OnChanged(function() _G.FOVFillEnabled = Toggles.FOVFillToggle.Value end)
+
+FOVFillGroupBox:AddSlider("FOVFillTransparencySlider", { Text = "FOV Fill Opacity (ความจาง)", Default = 0.2, Min = 0, Max = 1, Rounding = 2 })
+Options.FOVFillTransparencySlider:OnChanged(function() _G.FOVFillTransparency = Options.FOVFillTransparencySlider.Value end)
+
+FOVFillGroupBox:AddLabel("Fill Color 1"):AddColorPicker("FOVFillColor1Picker", { Default = Color3.fromRGB(255, 0, 0) })
+Options.FOVFillColor1Picker:OnChanged(function() _G.FOVFillColor1 = Options.FOVFillColor1Picker.Value end)
+
+FOVFillGroupBox:AddLabel("Fill Color 2"):AddColorPicker("FOVFillColor2Picker", { Default = Color3.fromRGB(0, 255, 0) })
+Options.FOVFillColor2Picker:OnChanged(function() _G.FOVFillColor2 = Options.FOVFillColor2Picker.Value end)
+
+FOVFillGroupBox:AddLabel("Fill Color 3"):AddColorPicker("FOVFillColor3Picker", { Default = Color3.fromRGB(0, 0, 255) })
+Options.FOVFillColor3Picker:OnChanged(function() _G.FOVFillColor3 = Options.FOVFillColor3Picker.Value end)
+
+FOVFillGroupBox:AddToggle("FOVFillRotateToggle", { Text = "Rotate FOV Fill (หมุนสลับสี)", Default = false })
+Toggles.FOVFillRotateToggle:OnChanged(function() _G.FOVFillRotateEnabled = Toggles.FOVFillRotateToggle.Value end)
+
+FOVFillGroupBox:AddSlider("FOVFillRotateSpeedSlider", { Text = "Color Rotation Speed", Default = 1, Min = 1, Max = 10, Rounding = 1 })
+Options.FOVFillRotateSpeedSlider:OnChanged(function() _G.FOVFillRotateSpeed = Options.FOVFillRotateSpeedSlider.Value end)
+
+
+-- ================= [5. Tracer Settings - ฝั่งขวาช่องท้ายสุด (อัปเดตใหม่ คลีนๆ)] =================
+TracerGroupBox:AddToggle("TracerVisibleToggle", { Text = "Enable Tracer Line", Default = true })
+Toggles.TracerVisibleToggle:OnChanged(function() _G.TracerEnabled = Toggles.TracerVisibleToggle.Value end)
+
+-- สไลเดอร์ปรับความหนาเส้นหลัก และเส้นขอบ Outline
+TracerGroupBox:AddSlider("TracerThicknessSlider", { Text = "Tracer Line Thickness", Default = 1.0, Min = 0.5, Max = 5.0, Rounding = 1 })
+Options.TracerThicknessSlider:OnChanged(function() _G.TracerThickness = Options.TracerThicknessSlider.Value end)
+
+TracerGroupBox:AddSlider("TracerOutlineThicknessSlider", { Text = "Tracer Outline Thickness", Default = 3.0, Min = 1.0, Max = 8.0, Rounding = 1 })
+Options.TracerOutlineThicknessSlider:OnChanged(function() _G.TracerOutlineThickness = Options.TracerOutlineThicknessSlider.Value end)
+
+-- ตัวเลือกสีของ Tracer เส้นหลัก และเส้นขอบ Outline
+TracerGroupBox:AddLabel("Tracer Main Color"):AddColorPicker("TracerLineColorPicker", { Default = Color3.fromRGB(255, 0, 0) })
+Options.TracerLineColorPicker:OnChanged(function() _G.TracerLineColor = Options.TracerLineColorPicker.Value end)
+
+TracerGroupBox:AddLabel("Tracer Outline Color"):AddColorPicker("TracerLineOutlineColorPicker", { Default = Color3.fromRGB(0, 0, 0) })
+Options.TracerLineOutlineColorPicker:OnChanged(function() _G.TracerLineOutlineColor = Options.TracerLineOutlineColorPicker.Value end)
 
 
 -- [Tab 2: ESP Settings]
@@ -682,6 +743,7 @@ Toggles.ChamsESPToggle:OnChanged(function() _G.ESPHighlights = Toggles.ChamsESPT
 EspLeftBox:AddToggle("HealthESPToggle", { Text = "Health Text ESP", Default = false })
 Toggles.HealthESPToggle:OnChanged(function() _G.ESPHealth = Toggles.HealthESPToggle.Value end)
 
+-- Colors Pickers attached to Labels
 EspRightBox:AddLabel("Highlight Glow Color"):AddColorPicker("GlowColorPicker", { Default = Color3.fromRGB(0, 255, 255) })
 Options.GlowColorPicker:OnChanged(function() _G.ColorBox = Options.GlowColorPicker.Value end)
 
@@ -702,6 +764,7 @@ Options.AntiAimModeDropdown:OnChanged(function() _G.AntiAimMode = Options.AntiAi
 MoveLeftBox:AddSlider("SpinSpeedSlider", { Text = "Rotation Spin Speed", Default = 15, Min = 5, Max = 50, Rounding = 0 })
 Options.SpinSpeedSlider:OnChanged(function() _G.AntiAimSpeed = Options.SpinSpeedSlider.Value end)
 
+-- Movement Settings
 MoveRightBox:AddToggle("ThirdPersonToggle", { Text = "Enable Third Person View", Default = false })
 Toggles.ThirdPersonToggle:OnChanged(function() _G.ThirdPersonEnabled = Toggles.ThirdPersonToggle.Value end)
 
@@ -713,101 +776,6 @@ Toggles.BhopToggle:OnChanged(function() _G.BhopEnabled = Toggles.BhopToggle.Valu
 
 MoveRightBox:AddSlider("BhopMultiplierSlider", { Text = "Bhop Velocity Speed Multiplier", Default = 1.5, Min = 1, Max = 5, Rounding = 1 })
 Options.BhopMultiplierSlider:OnChanged(function() _G.BhopSpeedMultiplier = Options.BhopMultiplierSlider.Value end)
-
-
--- [Tab 4: World & Visuals]
-local WorldLeftBox = Tabs.World:AddLeftGroupbox("Lighting & Environment")
-local WorldRightBox = Tabs.World:AddRightGroupbox("Character Customization")
-
-WorldLeftBox:AddSlider("ClockTimeSlider", { Text = "Clock Time (Hour)", Default = 12, Min = 0, Max = 24, Rounding = 1 })
-Options.ClockTimeSlider:OnChanged(function() Lighting.ClockTime = Options.ClockTimeSlider.Value end)
-
-WorldLeftBox:AddSlider("FogStartSlider", { Text = "Fog Start Distance", Default = 0, Min = 0, Max = 1000, Rounding = 0 })
-Options.FogStartSlider:OnChanged(function() Lighting.FogStart = Options.FogStartSlider.Value end)
-
-WorldLeftBox:AddSlider("FogEndSlider", { Text = "Fog End Distance", Default = 10000, Min = 100, Max = 50000, Rounding = 0 })
-Options.FogEndSlider:OnChanged(function() Lighting.FogEnd = Options.FogEndSlider.Value end)
-
-WorldLeftBox:AddLabel("Ambient Color"):AddColorPicker("AmbientColorPicker", { Default = Color3.fromRGB(128, 128, 128) })
-Options.AmbientColorPicker:OnChanged(function() Lighting.Ambient = Options.AmbientColorPicker.Value end)
-
-WorldLeftBox:AddLabel("Fog Color"):AddColorPicker("FogColorPicker", { Default = Color3.fromRGB(192, 192, 192) })
-Options.FogColorPicker:OnChanged(function() Lighting.FogColor = Options.FogColorPicker.Value end)
-
-WorldRightBox:AddToggle("ForcefieldBodyToggle", { Text = "Enable Forefill Body Effect", Default = false })
-Toggles.ForcefieldBodyToggle:OnChanged(function() 
-    _G.ForcefieldBody = Toggles.ForcefieldBodyToggle.Value 
-    if not _G.ForcefieldBody and LocalPlayer.Character then
-        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and not part:IsDescendantOf(LocalPlayer.Character:FindFirstChildOfClass("Tool") or workspace) then
-                part.Material = Enum.Material.Plastic
-                part.Transparency = 0
-            elseif part:IsA("Decal") or part:IsA("Texture") then
-                part.Transparency = 0
-            end
-        end
-    end
-end)
-
-WorldRightBox:AddSlider("ForefillTransparency", { Text = "Forefill Transparency", Default = 0.5, Min = 0, Max = 0.95, Rounding = 2 })
-Options.ForefillTransparency:OnChanged(function() _G.ForcefieldTransparency = Options.ForefillTransparency.Value end)
-
-WorldRightBox:AddLabel("Forefill Body Color"):AddColorPicker("ForefillColorPicker", { Default = Color3.fromRGB(0, 255, 255) })
-Options.ForefillColorPicker:OnChanged(function() _G.ForcefieldColor = Options.ForefillColorPicker.Value end)
-
-
--- ================= [Tab 5: Visuals (NEW Tab)] =================
-local VisualsLeftBox = Tabs.Visuals:AddLeftGroupbox("Weapon Taser Beam")
-local VisualsRightBox = Tabs.Visuals:AddRightGroupbox("Held Item Customization")
-
--- [กล่องซ้าย: ระบบเส้นเลเซอร์ Taser Beam]
-VisualsLeftBox:AddToggle("TaserBeamToggle", { Text = "Enable Taser Beam Effect", Default = false })
-Toggles.TaserBeamToggle:OnChanged(function() _G.TaserEnabled = Toggles.TaserBeamToggle.Value end)
-
-VisualsLeftBox:AddLabel("Taser Beam Color"):AddColorPicker("TaserColorPicker", { Default = Color3.fromRGB(0, 255, 255) })
-Options.TaserColorPicker:OnChanged(function() _G.TaserColor = Options.TaserColorPicker.Value end)
-
--- [กล่องขวา: ระบบปรับแต่งพื้นผิวอาวุธ และ การหมุน]
-VisualsRightBox:AddToggle("ItemEffectToggle", { Text = "Enable Item Material Effect", Default = false })
-Toggles.ItemEffectToggle:OnChanged(function() 
-    _G.ItemEffectEnabled = Toggles.ItemEffectToggle.Value 
-    -- คืนค่าวัสดุเดิมให้กับไอเทมเมื่อปิดสวิตช์
-    if not _G.ItemEffectEnabled and LocalPlayer.Character then
-        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        if tool then
-            for _, itemPart in ipairs(tool:GetDescendants()) do
-                if itemPart:IsA("BasePart") then
-                    itemPart.Material = Enum.Material.Plastic
-                end
-            end
-        end
-    end
-end)
-
-VisualsRightBox:AddDropdown("ItemMaterialDropdown", { Text = "Select Item Material", Values = {"ForceField", "Neon"}, Default = 1, Multi = false })
-Options.ItemMaterialDropdown:OnChanged(function() _G.ItemMaterialType = Options.ItemMaterialDropdown.Value end)
-
-VisualsRightBox:AddLabel("Item Tint Color"):AddColorPicker("ItemColorPicker", { Default = Color3.fromRGB(0, 255, 255) })
-Options.ItemColorPicker:OnChanged(function() _G.ItemEffectColor = Options.ItemColorPicker.Value end)
-
-VisualsRightBox:AddLabel("--------------------------------")
-
-VisualsRightBox:AddToggle("ItemSpinToggle", { Text = "Enable Held Item Spin", Default = false })
-Toggles.ItemSpinToggle:OnChanged(function() 
-    _G.ItemSpinEnabled = Toggles.ItemSpinToggle.Value 
-    -- รีเซ็ตค่า Grip มุมปกติเมื่อปิดหมุน
-    if not _G.ItemSpinEnabled and LocalPlayer.Character then
-        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        if tool then tool.Grip = CFrame.new(0, 0, 0) end
-    end
-end)
-
-VisualsRightBox:AddDropdown("ItemPatternDropdown", { Text = "Spin Design Pattern", Values = {"Regular", "Sine Wave", "Rapid Spin"}, Default = 1, Multi = false })
-Options.ItemPatternDropdown:OnChanged(function() _G.ItemSpinPattern = Options.ItemPatternDropdown.Value end)
-
-VisualsRightBox:AddSlider("ItemSpinSpeedSlider", { Text = "Item Velocity Speed", Default = 10, Min = 1, Max = 50, Rounding = 0 })
-Options.ItemSpinSpeedSlider:OnChanged(function() _G.ItemSpinSpeed = Options.ItemSpinSpeedSlider.Value end)
-
 
 -- Setup Theme & Save Manager automatically inside UI Settings Tab
 ThemeManager:SetLibrary(Library)
