@@ -621,7 +621,7 @@ end))
 
 -- ================= LinoriaLib Menu Tabs Creation =================
 local Tabs = {
-    Main = Window:AddTab("Silent Aim", "user"),
+    Main = Window:AddTab("Silent Aim", "traget"),
     ESP = Window:AddTab("ESP Settings", "eye"),
     Movement = Window:AddTab("Anti Aim & Move", "move"),
     ['UI Settings'] = Window:AddTab("UI Settings", "settings")
